@@ -1,0 +1,29 @@
+[
+  {
+    "id": "sample_001",
+    "name": "Product Launch Outreach",
+    "tenant_id": "demo@demo",
+    "description": "",
+    "version": "1",
+    "input_attributes": "{account.name,person.firstName,person.title}",
+    "evaluation_config_type": "content",
+    "evaluation_config_payload": {
+      "instruction": {
+        "goal": "Generate a short outreach email from Alex, Head of Partnerships at DataSync, to someone whose company recently launched a new product.\n\nCongratulate them on the launch. Keep it brief and genuine. Mention how DataSync's integration platform could complement their new product. Add a CTA to schedule a 15-minute call.\n\nKeep it under 100 words and under 500 characters.\n\nGenerate a subject line under 50 characters.\n\nPlain text only. No links. No emojis. No exclamation marks.\nKeep sentences short and concise. Friendly and professional tone.\nDo not mention their job title. Do not reference competitors.",
+        "tone": "friendly",
+        "type": "emailFull",
+        "evaluationGuideline": "Email should feel human, warm, and not salesy. Avoid corporate buzzwords.",
+        "minimumQualityScore": 85,
+        "maxRegenerationAttempts": 2
+      }
+    },
+    "value_type": "string",
+    "target_object": "person",
+    "created_at": "2026-06-01T10:00:00.000000Z",
+    "updated_at": "2026-06-01T10:00:00.000000Z",
+    "created_by": "demo@demo.com",
+    "updated_by": "demo@demo.com",
+    "input_url_attributes": "",
+    "status": "active"
+  }
+]

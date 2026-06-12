@@ -1,0 +1,17 @@
+# Python ignores
+venv/
+.venv/
+__pycache__/
+.pytest_cache
+*.pyc
+
+
+# Security ignores
+tests/
+.deepeval/
+
+*.json
+!sample_prompts.json
+adc_test.py
+
+understanding.md
