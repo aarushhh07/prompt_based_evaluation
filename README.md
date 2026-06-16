@@ -1,14 +1,18 @@
 # Email LLM Response Evaluation Pipeline
 
-A modular Python pipeline that evaluates LLM-generated email content using a layered approach: deterministic format checks (Layer 1) and LLM-as-a-Judge quality scoring (Layer 2).
+A modular Python pipeline that evaluates LLM-generated email content using a layered approach: deterministic format checks (Layer 1), LLM-as-a-Judge quality scoring (Layer 2), and a weighted amalgamator that produces flat, SQL-ready output.
 
 ## Architecture
 
 ```
 prompts.json ──┐
-               ├──► Pipeline ──► Layer 1: Format Checker (rule-based)
-{id}_response.csv ─┘            └──► Layer 2: LLM-as-a-Judge (GEval via DeepEval)
-                                         └──► Results JSON
+               ├──► Pipeline ──► Layer 1: Format Checker (rule-based) ──|
+{id}_response.csv ─┘            └──► Layer 2: LLM-as-a-Judge (GEval) ───┤
+                                                                        ▼
+                                                                  Amalgamator
+                                                                  (weighted composite)
+                                                                        ▼
+                                                              SQL-ready flat rows
 ```
 
 ### Layers
@@ -17,6 +21,7 @@ prompts.json ──┐
 |---|---|---|---|
 | **1** | Format Checker | Rule-based | Extracts formatting rules from the prompt via Gemini, then runs deterministic checks (character limits, banned words, subject line, required elements) |
 | **2** | LLM-as-a-Judge | GEval (DeepEval) | Uses a judge LLM to score the email on qualitative criteria like tone alignment, with chain-of-thought evaluation steps |
+| — | Amalgamator | Weighted average | Combines both layer scores into a composite score and flattens results into SQL-ready rows |
 
 ## Prerequisites
 
@@ -238,6 +243,9 @@ python3 main.py --prompts <path> --responses <path> [options]
 | `--model` | Model name for Layer 1 extractor (default: gemini-2.5-flash) |
 | `--provider_llmasajudge` | LLM provider for Layer 2 judge |
 | `--model_llmasajudge` | Model name for Layer 2 judge |
+| `--layer1-weight` | Weight for Layer 1 in composite score (default: 0.4) |
+| `--layer2-weight` | Weight for Layer 2 in composite score (default: 0.6) |
+| `--sql-table TABLE` | Print `CREATE TABLE` SQL for the given table name and exit |
 | `--offline` | Skip LLM calls, run with empty criteria |
 | `-o FILE` | Write results to file instead of stdout |
 | `-v` | Verbose logging |
@@ -258,32 +266,77 @@ Defaults are set in `config.py`:
 
 See `.env.example` for all available environment variables.
 
+## Amalgamator & SQL Integration
+
+The amalgamator automatically runs after both layers and produces flat rows — each row has only primitive types (`str`, `float`, `int`, `None`), ready for direct SQL insertion.
+
+**Composite scoring:** weighted average of active layers (default: 40% Layer 1, 60% Layer 2). If only one layer runs, that layer's score becomes the composite.
+
+**SQL columns per row:**
+
+| Column | Type | Source |
+|---|---|---|
+| `eval_id` | `VARCHAR(64)` | Identity |
+| `prompt_id`, `prompt_name` | `VARCHAR` | Prompt config |
+| `response_index` | `INTEGER` | Row position in CSV |
+| `response_subject`, `response_body` | `TEXT` | Response content |
+| `layer1_score` | `FLOAT` | Format checker (0.0–1.0) |
+| `layer1_total_checks`, `layer1_passed`, `layer1_failed` | `INTEGER` | Check counts |
+| `layer1_checks_json` | `TEXT` | Detailed per-check results (JSON string) |
+| `layer2_tone_score` | `FLOAT` | Tone judge (0.0–1.0) |
+| `layer2_tone_reason` | `TEXT` | Judge reasoning |
+| `composite_score` | `FLOAT` | Weighted composite (0.0–1.0) |
+| `platform_score` | `INTEGER` | Existing `__evaluation.overallScore` (0–100) |
+| `platform_rating` | `VARCHAR(32)` | Existing `__evaluation.qualityRating` |
+| `evaluated_at` | `TIMESTAMP` | When evaluation ran |
+
+**Generate the CREATE TABLE SQL:**
+
+```bash
+python3 main.py --prompts sample_data/sample_prompts.json --responses sample_data \
+  --sql-table evaluation_results
+```
+
+**Custom weights:**
+
+```bash
+python3 main.py --prompts sample_data/sample_prompts.json --responses sample_data \
+  --extractor --llmasajudge --layer1-weight 0.3 --layer2-weight 0.7
+```
+
 ## Sample Output
+
+The output contains `amalgamated` (flat SQL-ready rows) and `raw` (original layer results):
 
 ```json
 {
-  "llm_as_a_judge": [
-    {
-      "metric": "Tone",
-      "score": 0.9,
-      "passed": null,
-      "threshold": null,
-      "reason": "The tone is clearly friendly, using phrases like 'Big congrats'..."
-    }
-  ],
-  "extractor": [
+  "amalgamated": [
     {
       "eval_id": "001-0",
-      "checks": {
-        "character_limit": { "passed": false, "actual": 273, "limit": 250 },
-        "subject_line_present": { "passed": true },
-        "subject_line_length": { "passed": true, "actual": 29, "limit": 49 },
-        "banned_words": { "passed": true },
-        "required_elements": { "passed": false, "violations": ["congratulations"] }
-      },
-      "summary": { "total_checks": 5, "passed": 3, "failed": 2, "score": 0.6 }
+      "prompt_id": "001",
+      "prompt_name": "Product Launch Outreach",
+      "response_index": 0,
+      "response_subject": "Congrats on the launch",
+      "response_body": "Hi Sarah...",
+      "layer1_score": 0.6,
+      "layer1_total_checks": 5,
+      "layer1_passed": 3,
+      "layer1_failed": 2,
+      "layer1_checks_json": "{...}",
+      "layer2_tone_score": 0.9,
+      "layer2_tone_reason": "The tone is clearly friendly...",
+      "composite_score": 0.78,
+      "layer1_weight": 0.4,
+      "layer2_weight": 0.6,
+      "platform_score": 88,
+      "platform_rating": "Good",
+      "evaluated_at": "2026-06-16T04:41:05+00:00"
     }
-  ]
+  ],
+  "raw": {
+    "extractor": [ ... ],
+    "llm_as_a_judge": [ ... ]
+  }
 }
 ```
 
@@ -310,7 +363,8 @@ See `.env.example` for all available environment variables.
 │       ├── anthropic_provider.py     # Anthropic (available)
 │       └── ollama_provider.py        # Ollama local (available)
 ├── evaluators/
-│   └── format_checker.py             # Rule-based formatting checks (Layer 1)
+│   ├── format_checker.py             # Rule-based formatting checks (Layer 1)
+│   └── amalgamator.py                # Combines layers into SQL-ready output
 ├── sample_data/
 │   ├── sample_prompts.json           # Sample prompt configuration
 │   └── sample_001_response.csv       # Sample response data

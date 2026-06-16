@@ -29,6 +29,7 @@ from models.input_schema import EvaluationInput, PromptConfig, ResponseRecord
 from extractors.llm_as_a_judge import DeepEvalProviderAdapter
 from deepeval.metrics import GEval
 from deepeval.test_case import LLMTestCase, LLMTestCaseParams
+from evaluators.amalgamator import amalgamate, to_dicts, get_create_table_sql
 logger = logging.getLogger(__name__)
 
 
@@ -327,6 +328,56 @@ def build_arg_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Enable debug logging.",
     )
+    parser.add_argument(
+        "--sql-table",
+        type=str,
+        default=None,
+        metavar="TABLE_NAME",
+        help="Print CREATE TABLE SQL for the given table name and exit.",
+    )
+    parser.add_argument(
+        "--layer1-weight",
+        type=float,
+        default=0.4,
+        help="Weight for Layer 1 in composite score (default: 0.4).",
+    )
+    parser.add_argument(
+        "--layer2-weight",
+        type=float,
+        default=0.6,
+        help="Weight for Layer 2 in composite score (default: 0.6).",
+    )
+    parser.add_argument(
+        "--cloud-sql",
+        type=str,
+        default=None,
+        metavar="INSTANCE_CONNECTION_NAME",
+        help="Write results to Cloud SQL. Format: <PROJECT>:<REGION>:<INSTANCE>",
+    )
+    parser.add_argument(
+        "--db",
+        type=str,
+        default="evaluation_db",
+        help="Cloud SQL database name (default: evaluation_db).",
+    )
+    parser.add_argument(
+        "--db-user",
+        type=str,
+        default="postgres",
+        help="Cloud SQL database user (default: postgres).",
+    )
+    parser.add_argument(
+        "--db-password",
+        type=str,
+        default=None,
+        help="Cloud SQL database password. If omitted, uses IAM authentication.",
+    )
+    parser.add_argument(
+        "--db-table",
+        type=str,
+        default="evaluation_results",
+        help="Cloud SQL table name (default: evaluation_results).",
+    )
     return parser
 
 
@@ -377,28 +428,73 @@ def main():
         logger.warning("No evaluation inputs to process — exiting.")
         sys.exit(0)
 
+    # ── SQL table helper ──────────────────────────────────────────────────
+    if args.sql_table:
+        print(get_create_table_sql(args.sql_table))
+        sys.exit(0)
+
     # ── Pipelines ─────────────────────────────────────────────────────────
-    all_results = {}
+    extractor_results = None
+    judge_results = None
 
     if args.llmasajudge:
         logger.info("Running LLM-as-a-judge pipeline")
-        all_results["llm_as_a_judge"] = asyncio.run(
+        judge_results = asyncio.run(
             evaluate_llm_as_a_judge_batch(inputs, judge_config)
         )
 
     if args.extractor:
         logger.info("Running extractor pipeline")
-        all_results["extractor"] = asyncio.run(
+        extractor_results = asyncio.run(
             evaluate_batch(inputs, extractor_config)
         )
 
+    # ── Amalgamate ────────────────────────────────────────────────────────
+    weights = {
+        "layer1_format": args.layer1_weight,
+        "layer2_judge": args.layer2_weight,
+    }
+    amalgamated = amalgamate(
+        inputs=inputs,
+        extractor_results=extractor_results,
+        judge_results=judge_results,
+        weights=weights,
+    )
+
     # ── Output ────────────────────────────────────────────────────────────
-    output_json = json.dumps(all_results, indent=2)
+    amalgamated_dicts = to_dicts(amalgamated)
+
+    output = {
+        "amalgamated": amalgamated_dicts,
+        "raw": {},
+    }
+    if extractor_results:
+        output["raw"]["extractor"] = extractor_results
+    if judge_results:
+        output["raw"]["llm_as_a_judge"] = judge_results
+
+    output_json = json.dumps(output, indent=2)
 
     if args.output:
         args.output.write_text(output_json)
         logger.info("Results written to %s", args.output)
     else:
         print(output_json)
+
+    # ── Cloud SQL write ──────────────────────────────────────────────────
+    if args.cloud_sql:
+        from writers.cloud_sql_writer import write_rows
+
+        count = write_rows(
+            rows=amalgamated_dicts,
+            instance_connection_name=args.cloud_sql,
+            db_name=args.db,
+            table_name=args.db_table,
+            db_user=args.db_user,
+            db_password=args.db_password,
+        )
+        logger.info("Wrote %d row(s) to Cloud SQL", count)
+
+
 if __name__ == "__main__":
     main()
