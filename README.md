@@ -368,8 +368,5 @@ The output contains `amalgamated` (flat SQL-ready rows) and `raw` (original laye
 ├── sample_data/
 │   ├── sample_prompts.json           # Sample prompt configuration
 │   └── sample_001_response.csv       # Sample response data
-└── tests/
-    ├── test_format_checker.py        # Format checker unit tests
-    └── test_criteria_extractor.py    # Criteria extractor tests
 ```
 
