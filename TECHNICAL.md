@@ -461,3 +461,9 @@ WHERE layer1_score >= 0.8 AND layer2_tone_score < 0.5;
             │  (JSON)  │ │  (JSON)  │  │ (PostgreSQL)│
             └──────────┘ └──────────┘  └─────────────┘
 ```
+## Since Last Demo 
+- The amalgamator file and SQL integration complete the end-to-end framework, with deployment scope.
+- The results produced are coherent with sensible composite scores on which valuable insight may be gained upon the generated responses
+- Current work is to assess if a partially dynamic model for generation of python file is feasible
+- Also, if documents pertaining to further insight on the provider are accessible, a faithfulness check can also be introduced as a new layer.
+- The modular framework allows for easy changes and SQL integration is helpful in querying results.
