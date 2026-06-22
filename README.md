@@ -97,6 +97,40 @@ gcloud storage cp sample_data/prompts.json gs://<YOUR_BUCKET_NAME>/sample_data/
 gcloud storage cp sample_data/*_response.csv gs://<YOUR_BUCKET_NAME>/sample_data/
 ```
 
+### 5. Cloud SQL (PostgreSQL)
+
+To persist evaluation results to a database:
+
+```bash
+# Enable the Cloud SQL Admin API
+gcloud services enable sqladmin.googleapis.com --project=<YOUR_PROJECT_ID>
+
+# Create a Cloud SQL PostgreSQL instance
+gcloud sql instances create <INSTANCE_NAME> \
+    --database-version=POSTGRES_15 \
+    --tier=db-f1-micro \
+    --region=<YOUR_REGION> \
+    --project=<YOUR_PROJECT_ID>
+
+# Set the postgres user password
+gcloud sql users set-password postgres \
+    --instance=<INSTANCE_NAME> \
+    --password=<YOUR_PASSWORD>
+
+# Create the evaluation database
+gcloud sql databases create evaluation_db \
+    --instance=<INSTANCE_NAME>
+
+# Grant Cloud SQL Client role to the service account
+gcloud projects add-iam-policy-binding <YOUR_PROJECT_ID> \
+    --member="serviceAccount:pipeline-runner@<YOUR_PROJECT_ID>.iam.gserviceaccount.com" \
+    --role="roles/cloudsql.client"
+```
+
+> **Note:** The pipeline auto-creates the `evaluation_results` table on first run. No manual table setup needed.
+
+### 6. Deployment (Cloud Run Jobs)
+
 Deploy and run as a Cloud Run Job:
 
 ```bash
@@ -109,19 +143,25 @@ gcloud run jobs deploy <JOB_NAME> \
     --add-volume=name=config-volume,type=cloud-storage,bucket=<YOUR_BUCKET_NAME> \
     --add-volume-mount=volume=config-volume,mount-path=/mnt/configs
 
-# Execute the job
+# Execute — results written to Cloud SQL
 gcloud run jobs execute <JOB_NAME> \
     --region=<YOUR_REGION> \
-    --args="main.py,--prompts,/mnt/configs/sample_data/prompts.json,--responses,/mnt/configs/sample_data,--limit,1,--llmasajudge,--extractor,-o,/mnt/configs/"
+    --args="main.py,--prompts,/mnt/configs/sample_data/prompts.json,--responses,/mnt/configs/sample_data,--limit,1,--llmasajudge,--extractor,--cloud-sql,<YOUR_PROJECT_ID>:<YOUR_REGION>:<INSTANCE_NAME>,--db,evaluation_db,--db-password,<YOUR_PASSWORD>"
+
+# Execute — results written to JSON file on GCS (no database)
+gcloud run jobs execute <JOB_NAME> \
+    --region=<YOUR_REGION> \
+    --args="main.py,--prompts,/mnt/configs/sample_data/prompts.json,--responses,/mnt/configs/sample_data,--limit,1,--llmasajudge,--extractor,-o,/mnt/configs/output.json"
 ```
 
-### 5. Required IAM Roles
+### 7. Required IAM Roles
 
 | Role | Purpose |
 |---|---|
 | `roles/aiplatform.user` | Call Vertex AI / Gemini models |
 | `roles/storage.objectViewer` | Read prompt + response data from GCS bucket |
 | `roles/storage.objectCreator` | Write results back to GCS bucket (optional) |
+| `roles/cloudsql.client` | Connect to Cloud SQL instance (required for `--cloud-sql`) |
 | `roles/run.invoker` | Execute Cloud Run Jobs (for CI/CD triggers) |
 
 ## Quick Start
@@ -246,8 +286,13 @@ python3 main.py --prompts <path> --responses <path> [options]
 | `--layer1-weight` | Weight for Layer 1 in composite score (default: 0.4) |
 | `--layer2-weight` | Weight for Layer 2 in composite score (default: 0.6) |
 | `--sql-table TABLE` | Print `CREATE TABLE` SQL for the given table name and exit |
+| `--cloud-sql` | Write results to Cloud SQL. Format: `<PROJECT>:<REGION>:<INSTANCE>` |
+| `--db` | Cloud SQL database name (default: `evaluation_db`) |
+| `--db-user` | Cloud SQL user (default: `postgres`) |
+| `--db-password` | Cloud SQL password. If omitted, uses IAM auth |
+| `--db-table` | Cloud SQL table name (default: `evaluation_results`) |
 | `--offline` | Skip LLM calls, run with empty criteria |
-| `-o FILE` | Write results to file instead of stdout |
+| `-o FILE` | Write results JSON to file (optional, independent of `--cloud-sql`) |
 | `-v` | Verbose logging |
 
 ## Configuration
@@ -303,6 +348,17 @@ python3 main.py --prompts sample_data/sample_prompts.json --responses sample_dat
 python3 main.py --prompts sample_data/sample_prompts.json --responses sample_data \
   --extractor --llmasajudge --layer1-weight 0.3 --layer2-weight 0.7
 ```
+
+**Write results directly to Cloud SQL (local dev):**
+
+```bash
+python3 main.py --prompts sample_data/sample_prompts.json --responses sample_data \
+  --extractor --llmasajudge \
+  --cloud-sql <PROJECT_ID>:<REGION>:<INSTANCE_NAME> \
+  --db evaluation_db --db-password <PASSWORD>
+```
+
+> **Note:** `-o` and `--cloud-sql` are independent. Use either or both. When `--cloud-sql` is provided, results are written to the database. When `-o` is provided, results are written to a JSON file. Without either, results print to stdout.
 
 ## Sample Output
 
@@ -365,6 +421,8 @@ The output contains `amalgamated` (flat SQL-ready rows) and `raw` (original laye
 ├── evaluators/
 │   ├── format_checker.py             # Rule-based formatting checks (Layer 1)
 │   └── amalgamator.py                # Combines layers into SQL-ready output
+├── writers/
+│   └── cloud_sql_writer.py           # Cloud SQL PostgreSQL writer (auto table + upsert)
 ├── sample_data/
 │   ├── sample_prompts.json           # Sample prompt configuration
 │   └── sample_001_response.csv       # Sample response data
