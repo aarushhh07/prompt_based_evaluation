@@ -1,7 +1,11 @@
 """Main evaluation pipeline.
 
-Orchestrates: prompts.json + {id}_response.csv → criteria extraction →
+Orchestrates: prompts + responses → criteria extraction →
 format checking → results.
+
+Input modes:
+    File-based:  --prompts sample_data/prompts.json --responses sample_data
+    SQL-based:   --input-sql PROJECT:REGION:INSTANCE --db evaluation_db
 
 Usage:
     python pipeline.py --prompts sample_data/prompts.json
@@ -256,7 +260,7 @@ def load_inputs_for_prompts(
 
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Email LLM Response Evaluation Pipeline (Layer 1)",
+        description="Email LLM Response Evaluation Pipeline",
     )
     parser.add_argument(
         "--extractor", "-e",
@@ -281,8 +285,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--prompts",
         type=Path,
-        required=True,
-        help="Path to the prompts.json file.",
+        default=None,
+        help="Path to the prompts.json file (file mode).",
     )
     parser.add_argument(
         "--prompt-id",
@@ -296,12 +300,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Max number of responses to evaluate per prompt (default: all).",
     )
     parser.add_argument(
-        "--provider",
+        "--provider_extractor",
         default=None,
         help="LLM provider for criteria extraction (openai, gemini, anthropic, ollama).",
     )
     parser.add_argument(
-        "--model",
+        "--model_extractor",
         default=None,
         help="Model name to use for criteria extraction.",
     )
@@ -320,8 +324,17 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--responses",
         type=Path,
         default=None,
-        required=True,
-        help="Path for the .csv responses file"
+        help="Path for the directory containing response CSV files (file mode).",
+    )
+    parser.add_argument(
+        "--input-sql",
+        action="store_true",
+        help="Read prompts and responses from Cloud SQL instead of files. Format: <PROJECT>:<REGION>:<INSTANCE>",
+    )
+    parser.add_argument(
+        "--input-tables-sql",
+        action="store_true",
+        help="Print CREATE TABLE SQL for the input tables (prompts + responses) and exit.",
     )
     parser.add_argument(
         "--verbose", "-v",
@@ -410,19 +423,40 @@ def main():
     ) if args.llmasajudge else None
 
     extractor_config = _build_config(
-        provider=args.provider if args.extractor else None,
-        model=args.model       if args.extractor else None,
+        provider=args.provider_extractor if args.extractor else None,
+        model=args.model_extractor       if args.extractor else None,
         offline=args.offline,
     ) if args.extractor else None
 
-    # ── Inputs (loaded once, shared across all pipelines) ─────────────────
-    inputs = load_inputs_for_prompts(
-        prompts_path=args.prompts,
-        prompt_id=args.prompt_id,
-        limit=args.limit,
-        responses_path_directory=args.responses,
-    )
-    logger.info("Loaded %d evaluation input(s) from %s", len(inputs), args.prompts)
+    # ── Input table SQL helper ──────────────────────────────────────────
+    if args.input_tables_sql:
+        from loaders.sql_loader import get_input_tables_sql
+        print(get_input_tables_sql())
+        sys.exit(0)
+
+    # ── Inputs (loaded once, shared across all pipelines) ───────────────
+    if args.input_sql:
+        from loaders.sql_loader import load_inputs_from_sql
+        inputs = load_inputs_from_sql(
+            instance_connection_name=args.cloud_sql,
+            db_name=args.db,
+            db_user=args.db_user,
+            db_password=args.db_password,
+            prompt_id=args.prompt_id,
+            limit=args.limit,
+        )
+        logger.info("Loaded %d evaluation input(s) from SQL", len(inputs))
+    elif args.prompts and args.responses:
+        inputs = load_inputs_for_prompts(
+            prompts_path=args.prompts,
+            prompt_id=args.prompt_id,
+            limit=args.limit,
+            responses_path_directory=args.responses,
+        )
+        logger.info("Loaded %d evaluation input(s) from %s", len(inputs), args.prompts)
+    else:
+        logger.error("Provide either --input-sql or both --prompts and --responses")
+        sys.exit(1)
 
     if not inputs:
         logger.warning("No evaluation inputs to process — exiting.")
